@@ -1,0 +1,1257 @@
+---
+title: "MARTA Accessibility and Equity Analysis"
+author: "Katherine Losada"
+date: "Fall 2024; Updated Winter 2026"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 6)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(sf)
+  library(sfnetworks)
+  library(here)
+  library(glue)
+  library(leaflet)
+  library(plotly)
+  library(htmltools)
+  library(scales)
+})
+source(here::here("scripts", "00_utils.R"))
+```
+
+```{r optional-pipeline, eval=FALSE}
+# Run this once after placing the MARTA GTFS zip in data_raw/gtfs/
+source(here::here("scripts", "99_run_all.R"))
+```
+
+```{r load-outputs}
+tracts_final <- readRDS(here::here("data_processed", "tracts_final.rds"))
+accessibility_summary <- readRDS(here::here("data_processed", "accessibility_summary.rds"))
+travel_times_long <- readRDS(here::here("data_processed", "travel_times_long.rds"))
+destinations <- readRDS(here::here("data_processed", "destinations.rds"))
+all_stops <- readRDS(here::here("data_processed", "all_stops.rds"))
+rail_stops <- readRDS(here::here("data_processed", "rail_stops.rds"))
+analysis_window <- readRDS(here::here("data_processed", "analysis_window.rds"))
+origin_stop_lookup <- readRDS(here::here("data_processed", "origin_stop_lookup.rds"))
+destination_stop_lookup <- readRDS(here::here("data_processed", "destination_stop_lookup.rds"))
+
+nsa_path <- list.files(here::here("data_raw", "boundaries"), pattern = "\\.(gpkg|geojson|shp)$", full.names = TRUE)
+nsa_layer <- if (length(nsa_path)) st_read(nsa_path[[1]], quiet = TRUE) %>% st_make_valid() %>% st_transform(4326) else NULL
+walk_net <- readRDS(here::here("data_processed", "walk_net.rds"))
+gtfs_full <- readRDS(here::here("data_processed", "gtfs_full.rds"))
+
+tracts_leaflet <- tracts_final %>%
+  st_transform(4326) %>%
+  mutate(
+    hhinc_label = dollar(hhinc),
+    pct_minority_label = percent(pct_minority / 100, accuracy = 0.1),
+    pct_zero_vehicle_label = percent(pct_zero_vehicle / 100, accuracy = 0.1)
+  )
+
+destinations_ll <- destinations %>% st_transform(4326)
+atlanta_area_ll <- if (!is.null(nsa_layer)) {
+  old_s2 <- sf_use_s2(FALSE)
+  on.exit(sf_use_s2(old_s2), add = TRUE)
+  st_union(nsa_layer)
+} else {
+  st_union(tracts_leaflet)
+}
+
+all_stops_ll <- all_stops %>%
+  st_transform(4326) %>%
+  filter(lengths(st_intersects(geometry, atlanta_area_ll)) > 0)
+
+rail_stops_ll <- rail_stops %>%
+  st_transform(4326) %>%
+  filter(lengths(st_intersects(geometry, atlanta_area_ll)) > 0)
+
+reference_rail_stops_ll <- rail_stops %>%
+  st_transform(4326)
+
+bus_stops_ll <- all_stops_ll %>%
+  filter(!(stop_id %in% rail_stops_ll$stop_id))
+
+collapse_stop_points <- function(sf_data, group_cols) {
+  sf_data %>%
+    mutate(.geom = geometry) %>%
+    st_drop_geometry() %>%
+    mutate(row_id = row_number()) %>%
+    left_join(
+      sf_data %>%
+        mutate(row_id = row_number()) %>%
+        select(row_id, geometry),
+      by = "row_id"
+    ) %>%
+    st_as_sf() %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarise(n_gtfs_stops = n(), do_union = TRUE, .groups = "drop") %>%
+    st_point_on_surface()
+}
+
+rail_stations_vis <- collapse_stop_points(reference_rail_stops_ll, "stop_name")
+bus_stops_vis <- collapse_stop_points(bus_stops_ll, "stop_name")
+
+walk_nodes <- sf::st_as_sf(walk_net, "nodes")
+walk_edges <- sf::st_as_sf(walk_net, "edges")
+
+`%||%` <- function(x, y) if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
+
+rail_line_colors <- c(
+  RED = "#EE3124",
+  GOLD = "#FDB913",
+  BLUE = "#00A1DE",
+  GREEN = "#009B3A"
+)
+
+dest_marker_colors <- c(
+  job_center = "#5b6c8f",
+  education = "#5f8f86",
+  hospital = "#b56a74",
+  airport = "#c78b61"
+)
+
+dest_legend_colors <- c(
+  job_center = "#2b6cb0",
+  education = "#2f855a",
+  hospital = "#c53030",
+  airport = "#dd6b20"
+)
+
+walk_example_geoid <- "13121003500"
+
+walk_example_origin <- tracts_final %>%
+  filter(GEOID == walk_example_geoid) %>%
+  st_point_on_surface()
+
+walk_example_costs <- sfnetworks::st_network_cost(
+  walk_net,
+  from = walk_example_origin,
+  to = walk_nodes,
+  weights = "weight"
+)
+
+walk_reachable_nodes <- which(walk_example_costs[1, ] <= max_walk_meters)
+
+walk_example_routes <- walk_edges %>%
+  mutate(edge_id = row_number()) %>%
+  filter(from %in% walk_reachable_nodes | to %in% walk_reachable_nodes) %>%
+  st_transform(4326)
+
+walk_example_stops_all <- all_stops %>%
+  mutate(
+    euclid_dist_m = as.numeric(st_distance(geometry, st_transform(walk_example_origin, st_crs(all_stops)))),
+    walk_time_min = euclid_dist_m / walk_speed_m_per_min,
+    is_rail = stop_id %in% rail_stops$stop_id
+  ) %>%
+  filter(euclid_dist_m <= max_walk_meters)
+
+walk_example_stops <- bind_rows(
+  walk_example_stops_all %>%
+    filter(is_rail) %>%
+    arrange(euclid_dist_m),
+  walk_example_stops_all %>%
+    filter(!is_rail) %>%
+    arrange(euclid_dist_m)
+) %>%
+  st_transform(4326)
+
+walk_example_stops_vis <- collapse_stop_points(
+  walk_example_stops %>%
+    mutate(stop_type = if_else(is_rail, "Rail station", "Bus stop")),
+  c("stop_name", "stop_type")
+)
+
+buckhead_geoid <- "13121010006"
+buckhead_origin <- tracts_final %>%
+  filter(GEOID == buckhead_geoid) %>%
+  st_point_on_surface() %>%
+  st_transform(4326)
+
+buckhead_station <- rail_stops %>%
+  filter(stop_name == "BUCKHEAD STATION") %>%
+  slice(1) %>%
+  st_transform(4326)
+
+gatech_point <- destinations %>%
+  filter(dest_id == "gatech") %>%
+  st_transform(4326)
+
+midtown_station <- rail_stops %>%
+  filter(stop_name %in% c("MIDTOWN STATION", "MIDTOWN  STATION")) %>%
+  slice(1) %>%
+  st_transform(4326)
+
+rail_shape_lookup <- gtfs_full$trips %>%
+  left_join(gtfs_full$routes %>% select(route_id, route_short_name), by = "route_id") %>%
+  filter(route_short_name %in% c("RED", "GOLD", "BLUE", "GREEN")) %>%
+  distinct(route_short_name, shape_id)
+
+rail_shape_sf <- rail_shape_lookup %>%
+  group_by(route_short_name, shape_id) %>%
+  group_split()
+
+rail_shape_sf <- purrr::map_dfr(rail_shape_sf, function(df) {
+  shape_points <- gtfs_full$shapes %>%
+    filter(shape_id == df$shape_id[[1]]) %>%
+    arrange(shape_pt_sequence)
+  st_sf(
+    route_short_name = df$route_short_name[[1]],
+    shape_id = df$shape_id[[1]],
+    geometry = st_sfc(st_linestring(as.matrix(shape_points[, c("shape_pt_lon", "shape_pt_lat")])), crs = 4326)
+  )
+}) %>%
+  group_by(route_short_name) %>%
+  summarise(do_union = TRUE) %>%
+  st_transform(4326)
+
+reference_map_bbox_list <- list(
+  st_bbox(tracts_leaflet),
+  st_bbox(destinations_ll),
+  st_bbox(reference_rail_stops_ll),
+  st_bbox(rail_shape_sf)
+)
+
+reference_map_bounds <- c(
+  xmin = min(vapply(reference_map_bbox_list, `[[`, numeric(1), "xmin")),
+  ymin = min(vapply(reference_map_bbox_list, `[[`, numeric(1), "ymin")),
+  xmax = max(vapply(reference_map_bbox_list, `[[`, numeric(1), "xmax")),
+  ymax = max(vapply(reference_map_bbox_list, `[[`, numeric(1), "ymax"))
+)
+
+extract_walk_path <- function(network, from_sf, to_sf, label_text = "Walk path") {
+  node_sf <- st_as_sf(network, "nodes")
+  edge_sf <- st_as_sf(network, "edges")
+  from_proj <- st_transform(from_sf[1, ], st_crs(node_sf))
+  to_proj <- st_transform(to_sf[1, ], st_crs(node_sf))
+  from_idx <- st_nearest_feature(from_proj, node_sf)
+  to_idx <- st_nearest_feature(to_proj, node_sf)
+  path_obj <- suppressWarnings(
+    sfnetworks::st_network_paths(network, from = from_idx, to = to_idx, weights = "weight")
+  )
+  edge_idx <- path_obj$edge_paths[[1]]
+
+  if (!length(edge_idx)) {
+    return(
+      st_sf(
+        path_label = label_text,
+        geometry = st_nearest_points(st_transform(from_proj, 4326), st_transform(to_proj, 4326))
+      )
+    )
+  }
+
+  edge_sf %>%
+    slice(edge_idx) %>%
+    st_transform(4326) %>%
+    mutate(path_label = label_text)
+}
+
+walk_threshold_ring <- st_buffer(
+  st_transform(walk_example_origin, st_crs(tracts_final)),
+  dist = max_walk_meters
+) %>% st_transform(4326)
+
+origin_station_link <- st_sf(
+  path_label = "Origin to Buckhead Station",
+  geometry = st_nearest_points(buckhead_origin, buckhead_station)
+)
+
+station_destination_link <- st_sf(
+  path_label = "Midtown Station to Georgia Tech",
+  geometry = st_nearest_points(midtown_station, gatech_point)
+)
+
+workflow_bbox <- st_bbox(
+  st_buffer(
+    st_union(
+      st_transform(buckhead_origin, st_crs(tracts_final)),
+      st_transform(gatech_point, st_crs(tracts_final))
+    ),
+    dist = 3000
+  ) %>% st_transform(4326)
+)
+
+workflow_rail_lines <- st_crop(rail_shape_sf, workflow_bbox) %>%
+  filter(route_short_name == "RED")
+
+summary_stats <- accessibility_summary %>%
+  group_by(scenario) %>%
+  summarise(
+    mean_mean_tt = mean(mean_tt, na.rm = TRUE),
+    mean_n45 = mean(n_45, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+travel_long_viz <- travel_times_long %>%
+  left_join(tracts_final %>% st_drop_geometry() %>% select(GEOID, hhinc, pct_minority, pct_zero_vehicle), by = "GEOID")
+reachability_20 <- travel_times_long %>%
+  mutate(reachable_20 = reachable & !is.na(travel_time_min) & travel_time_min <= 20) %>%
+  group_by(GEOID, scenario) %>%
+  summarise(n_20 = sum(reachable_20, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = scenario,
+    values_from = n_20,
+    names_glue = "{scenario}_n_20"
+  )
+
+tracts_leaflet <- tracts_leaflet %>%
+  left_join(reachability_20, by = "GEOID") %>%
+  mutate(
+    rail_only_n_20 = replace_na(rail_only_n_20, 0),
+    bus_rail_n_20 = replace_na(bus_rail_n_20, 0),
+    diff_n_20 = replace_na(bus_rail_n_20, 0) - replace_na(rail_only_n_20, 0),
+    diff_n_30 = replace_na(bus_rail_n_30, 0) - replace_na(rail_only_n_30, 0),
+    diff_n_45 = replace_na(bus_rail_n_45, 0) - replace_na(rail_only_n_45, 0)
+  )
+
+summary_reachability <- tracts_leaflet %>%
+  st_drop_geometry() %>%
+  summarise(
+    rail_only_n_20 = mean(rail_only_n_20, na.rm = TRUE),
+    rail_only_n_30 = mean(rail_only_n_30, na.rm = TRUE),
+    rail_only_n_45 = mean(rail_only_n_45, na.rm = TRUE),
+    bus_rail_n_20 = mean(bus_rail_n_20, na.rm = TRUE),
+    bus_rail_n_30 = mean(bus_rail_n_30, na.rm = TRUE),
+    bus_rail_n_45 = mean(bus_rail_n_45, na.rm = TRUE),
+    improvement_20 = mean(diff_n_20, na.rm = TRUE),
+    improvement_30 = mean(replace_na(bus_rail_n_30, 0) - replace_na(rail_only_n_30, 0), na.rm = TRUE),
+    improvement_45 = mean(diff_n_45, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "metric", values_to = "value") %>%
+  separate(metric, into = c("scenario", "threshold"), sep = "_(?=[^_]+$)") %>%
+  mutate(
+    scenario = recode(
+      scenario,
+      rail_only = "Rail only",
+      bus_rail = "Bus + rail",
+      improvement = "Average improvement"
+    ),
+    threshold = recode(threshold, n_20 = "<= 20 min", n_30 = "<= 30 min", n_45 = "<= 45 min", `20` = "<= 20 min", `30` = "<= 30 min", `45` = "<= 45 min")
+  ) %>%
+  pivot_wider(names_from = threshold, values_from = value)
+
+count_palette <- c("#edf8fb", "#bfd3e6", "#9ebcda", "#8c96c6")
+travel_time_palette <- c("#f7fcfd", "#e0ecf4", "#bfd3e6", "#9ebcda", "#8c96c6", "#8856a7", "#6e016b")
+difference_palette <- c("#b35806", "#f1a340", "#f7f7f7", "#998ec3", "#542788")
+count_bins <- c(-0.1, 0.5, 2.5, 4.5, 7.5)
+count_labels <- c("0", "1-2", "3-4", "5-7")
+improvement_bins <- c(-0.1, 0.5, 1.5, 3.5, 7.5)
+improvement_labels <- c("0", "1", "2-3", "4-7")
+travel_time_bins <- c(0, 5, 10, 20, 30, 45, 60, 120)
+
+make_popup_html <- function(data, value_col, label) {
+  glue_data(
+    data,
+    "<strong>Tract:</strong> {NAME}<br/>",
+    "<strong>{label}:</strong> {ifelse(is.na(.data[[value_col]]), 'Not reachable', round(.data[[value_col]], 1))}<br/>",
+    "<strong>Median income:</strong> {hhinc_label}<br/>",
+    "<strong>Minority share:</strong> {pct_minority_label}<br/>",
+    "<strong>Zero-vehicle HH:</strong> {pct_zero_vehicle_label}"
+  )
+}
+
+add_reference_destination_markers <- function(map_obj, data) {
+  icon_map <- c(
+    job_center = "briefcase",
+    education = "graduation-cap",
+    hospital = "plus-square",
+    airport = "plane"
+  )
+
+  marker_map <- c(
+    job_center = "darkblue",
+    education = "darkpurple",
+    hospital = "pink",
+    airport = "orange"
+  )
+
+  for (type_name in names(icon_map)) {
+    type_data <- data %>% filter(dest_type == type_name)
+    if (!nrow(type_data)) next
+
+    map_obj <- map_obj %>%
+      addAwesomeMarkers(
+        data = type_data,
+        icon = awesomeIcons(
+          icon = icon_map[[type_name]],
+          iconColor = "white",
+          library = "fa",
+          markerColor = marker_map[[type_name]]
+        ),
+        label = ~dest_name,
+        popup = ~glue("<strong>{dest_name}</strong><br/>{dest_type}"),
+        group = "Destinations"
+      )
+  }
+
+  map_obj
+}
+
+add_thematic_destination_markers <- function(map_obj, data) {
+  for (type_name in names(dest_marker_colors)) {
+    type_data <- data %>% filter(dest_type == type_name)
+    if (!nrow(type_data)) next
+
+    map_obj <- map_obj %>%
+      addCircleMarkers(
+        data = type_data,
+        radius = 2,
+        stroke = TRUE,
+        weight = 0.7,
+        color = "#ffffff",
+        fillColor = dest_marker_colors[[type_name]],
+        fillOpacity = 0.9,
+        label = ~dest_name,
+        popup = ~glue("<strong>{dest_name}</strong><br/>{dest_type}"),
+        group = "Destinations"
+      )
+  }
+
+  map_obj
+}
+
+reference_legend_html <- HTML(
+  paste0(
+    "<div style='background: rgba(255,255,255,0.96); padding: 10px 12px; border-radius: 6px; border: 1px solid #d0d0d0;'>",
+    "<div style='font-weight: 700; margin-bottom: 8px;'>Transit and Destinations</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:16px;height:0;border-top:2px solid #9a8f80;margin-right:8px;vertical-align:middle;'></span>Census tracts</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:12px;height:12px;background:#7b8c9a;border-radius:50%;margin-right:8px;'></span>Bus stops</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:12px;height:12px;background:#000000;border-radius:50%;margin-right:8px;'></span>Rail stations</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:16px;height:3px;background:#EE3124;margin-right:8px;vertical-align:middle;'></span>Red line</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:16px;height:3px;background:#FDB913;margin-right:8px;vertical-align:middle;'></span>Gold line</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:16px;height:3px;background:#00A1DE;margin-right:8px;vertical-align:middle;'></span>Blue line</div>",
+    "<div style='margin-bottom: 8px;'><span style='display:inline-block;width:16px;height:3px;background:#009B3A;margin-right:8px;vertical-align:middle;'></span>Green line</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:12px;height:12px;background:#1f3b73;border-radius:50%;margin-right:8px;'></span>Job centers</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:12px;height:12px;background:#7a4fb7;border-radius:50%;margin-right:8px;'></span>Education</div>",
+    "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:12px;height:12px;background:#d97a92;border-radius:50%;margin-right:8px;'></span>Hospitals</div>",
+    "<div><span style='display:inline-block;width:12px;height:12px;background:#e3a56f;border-radius:50%;margin-right:8px;'></span>Airport</div>",
+    "</div>"
+  )
+)
+
+make_swatch_legend_html <- function(title, colors, labels) {
+  HTML(
+    paste0(
+      "<div style='background: rgba(255,255,255,0.96); padding: 10px 12px; border-radius: 6px; border: 1px solid #d0d0d0;'>",
+      "<div style='font-weight: 700; margin-bottom: 8px;'>", title, "</div>",
+      paste0(
+        "<div style='margin-bottom: 4px;'><span style='display:inline-block;width:12px;height:12px;background:",
+        colors,
+        ";margin-right:8px;vertical-align:middle;'></span>",
+        labels,
+        "</div>",
+        collapse = ""
+      ),
+      "</div>"
+    )
+  )
+}
+
+make_component_legend_html <- function(title, items) {
+  entry_html <- purrr::pmap_chr(items, function(type, color, label) {
+    symbol <- if (type == "line") {
+      paste0(
+        "<span style='display:inline-block;width:18px;height:0;border-top:3px solid ",
+        color,
+        ";margin-right:8px;vertical-align:middle;'></span>"
+      )
+    } else {
+      paste0(
+        "<span style='display:inline-block;width:12px;height:12px;background:",
+        color,
+        ";border-radius:50%;margin-right:8px;vertical-align:middle;'></span>"
+      )
+    }
+
+    paste0("<div style='margin-bottom: 4px;'>", symbol, label, "</div>")
+  })
+
+  HTML(
+    paste0(
+      "<div style='background: rgba(255,255,255,0.96); padding: 10px 12px; border-radius: 6px; border: 1px solid #d0d0d0;'>",
+      "<div style='font-weight: 700; margin-bottom: 8px;'>", title, "</div>",
+      paste0(entry_html, collapse = ""),
+      "</div>"
+    )
+  )
+}
+
+demographic_specs <- list(
+  list(col = "hhinc", label = "Median household income", palette = c("#fff5eb", "#fdc38d", "#f16913", "#7f2704")),
+  list(col = "pct_minority", label = "Percent minority", palette = c("#fff5eb", "#fdc38d", "#f16913", "#7f2704")),
+  list(col = "pct_zero_vehicle", label = "Percent zero-vehicle households", palette = c("#fff5eb", "#fdc38d", "#f16913", "#7f2704"))
+)
+
+make_demographic_map <- function(sf_data, value_col, label, palette_colors) {
+  value_fmt <- if (value_col == "hhinc") {
+    function(x) dollar(x)
+  } else {
+    function(x) percent(x / 100, accuracy = 0.1)
+  }
+
+  viz_data <- sf_data %>%
+    mutate(
+      metric_value = .data[[value_col]],
+      popup_html = glue(
+        "<strong>Tract:</strong> {NAME}<br/>",
+        "<strong>{label}:</strong> {value_fmt(metric_value)}<br/>",
+        "<strong>Median income:</strong> {hhinc_label}<br/>",
+        "<strong>Minority share:</strong> {pct_minority_label}<br/>",
+        "<strong>Zero-vehicle HH:</strong> {pct_zero_vehicle_label}"
+      )
+    )
+
+  pal <- colorNumeric(palette = palette_colors, domain = viz_data$metric_value, na.color = "#d9d9d9")
+
+  leaflet(viz_data, options = leafletOptions(zoomControl = TRUE, minZoom = 9)) %>%
+    addProviderTiles(providers$CartoDB.VoyagerNoLabels) %>%
+    addPolygons(
+      fillColor = ~pal(metric_value),
+      fillOpacity = 0.84,
+      color = "#faf7f2",
+      weight = 0.5,
+      popup = ~popup_html,
+      highlightOptions = highlightOptions(weight = 2, color = "#111111", bringToFront = TRUE)
+    ) %>%
+    addLegend(
+      pal = pal,
+      values = viz_data$metric_value,
+      title = label,
+      position = "bottomright",
+      opacity = 0.9
+    )
+}
+
+small_marker_css <- tags$style(HTML("
+  .awesome-marker {
+    transform: scale(0.5);
+    transform-origin: center bottom;
+  }
+"))
+
+reference_map <- leaflet(options = leafletOptions(minZoom = 9)) %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels) %>%
+  addPolygons(
+    data = tracts_leaflet,
+    color = "#9a8f80",
+    weight = 1.1,
+    fill = FALSE,
+    group = "Census tracts"
+  ) %>%
+  addPolylines(
+    data = rail_shape_sf,
+    color = ~unname(rail_line_colors[route_short_name]),
+    weight = 4,
+    opacity = 0.85,
+    group = "Rail lines",
+    popup = ~glue("<strong>{route_short_name} line</strong>")
+  ) %>%
+  addCircleMarkers(
+    data = bus_stops_vis,
+    radius = 2,
+    stroke = FALSE,
+    fillColor = "#7b8c9a",
+    fillOpacity = 0.3,
+    group = "Bus stops"
+  ) %>%
+  addCircleMarkers(
+    data = rail_stations_vis,
+    radius = 2,
+    stroke = FALSE,
+    fillColor = "#000000",
+    fillOpacity = 1,
+    group = "Rail stations"
+  )
+
+make_leaflet_map <- function(sf_data, value_col, palette_colors, label, popup_col = value_col, bins = NULL, legend_title = label, legend_labels = NULL, marker_mode = c("none", "circles")) {
+  marker_mode <- match.arg(marker_mode)
+  viz_data <- sf_data %>%
+    mutate(
+      metric_value = .data[[value_col]],
+      popup_value = .data[[popup_col]],
+      popup_html = glue(
+        "<strong>Tract:</strong> {NAME}<br/>",
+        "<strong>{label}:</strong> {ifelse(is.na(popup_value), 'Not reachable', round(popup_value, 1))}<br/>",
+        "<strong>Median income:</strong> {hhinc_label}<br/>",
+        "<strong>Minority share:</strong> {pct_minority_label}<br/>",
+        "<strong>Zero-vehicle HH:</strong> {pct_zero_vehicle_label}"
+      )
+    )
+  vals <- viz_data$metric_value
+  pal <- if (is.null(bins)) {
+    colorNumeric(palette = palette_colors, domain = vals, na.color = "#d9d9d9")
+  } else {
+    colorBin(palette = palette_colors, domain = vals, bins = bins, na.color = "#d9d9d9", pretty = FALSE)
+  }
+
+  map_obj <- leaflet(viz_data, options = leafletOptions(zoomControl = TRUE, minZoom = 9)) %>%
+    addProviderTiles(providers$CartoDB.VoyagerNoLabels) %>%
+    addPolygons(
+      fillColor = ~pal(metric_value),
+      fillOpacity = 0.82,
+      color = "#f8f5f0",
+      weight = 0.5,
+      smoothFactor = 0.2,
+      popup = ~popup_html,
+      highlightOptions = highlightOptions(weight = 2, color = "#111111", bringToFront = TRUE)
+    )
+
+  if (marker_mode == "circles") {
+    map_obj <- add_thematic_destination_markers(map_obj, destinations_ll)
+  }
+
+  if (is.null(legend_labels)) {
+    map_obj <- map_obj %>%
+      addLegend(
+        pal = pal,
+        values = vals,
+        title = legend_title,
+        position = "bottomright",
+        opacity = 0.9
+      )
+  } else {
+    legend_colors <- unname(pal(c(0, 1, 3, 5)[seq_along(legend_labels)]))
+    map_obj <- map_obj %>%
+      addControl(
+        make_swatch_legend_html(legend_title, legend_colors, legend_labels),
+        position = "bottomright"
+      )
+  }
+
+  map_obj
+}
+
+make_toggle_tt_map <- function(sf_data, rail_col, bus_col, title_prefix, palette_colors, bins, marker_mode = c("none", "circles")) {
+  marker_mode <- match.arg(marker_mode)
+  map_obj <- leaflet(options = leafletOptions(minZoom = 9)) %>%
+    addProviderTiles(providers$CartoDB.VoyagerNoLabels)
+
+  shared_domain <- c(sf_data[[rail_col]], sf_data[[bus_col]])
+  shared_pal <- colorBin(
+    palette = palette_colors,
+    domain = shared_domain,
+    bins = bins,
+    na.color = "#d9d9d9",
+    pretty = FALSE
+  )
+
+  layer_specs <- list(
+    list(col = rail_col, label = glue("{title_prefix}: Rail only")),
+    list(col = bus_col, label = glue("{title_prefix}: Bus + rail"))
+  )
+
+  for (spec in layer_specs) {
+    group_data <- sf_data %>%
+      mutate(
+        metric_value = .data[[spec$col]],
+        popup_html = glue(
+          "<strong>Tract:</strong> {NAME}<br/>",
+          "<strong>{spec$label}:</strong> {ifelse(is.na(metric_value), 'Not reachable', round(metric_value, 1))}<br/>",
+          "<strong>Median income:</strong> {hhinc_label}<br/>",
+          "<strong>Minority share:</strong> {pct_minority_label}<br/>",
+          "<strong>Zero-vehicle HH:</strong> {pct_zero_vehicle_label}"
+        )
+      )
+
+    map_obj <- map_obj %>%
+      addPolygons(
+        data = group_data,
+        fillColor = ~shared_pal(metric_value),
+        fillOpacity = 0.84,
+        color = "#faf7f2",
+        weight = 0.5,
+        popup = ~popup_html,
+        group = spec$label,
+        highlightOptions = highlightOptions(weight = 2, color = "#111111", bringToFront = TRUE)
+      )
+  }
+
+  map_obj %>%
+    {if (marker_mode == "circles") add_thematic_destination_markers(., destinations_ll %>% filter(dest_name == "Midtown")) else .} %>%
+    addLegend(
+      pal = shared_pal,
+      values = shared_domain,
+      title = title_prefix,
+      position = "bottomright",
+      opacity = 0.9
+    ) %>%
+    addLayersControl(
+      baseGroups = purrr::map_chr(layer_specs, "label"),
+      overlayGroups = "Destinations",
+      options = layersControlOptions(collapsed = FALSE),
+      position = "topleft"
+    )
+}
+
+make_threshold_toggle_map <- function(sf_data, columns, scenario_label, palette_colors, bins, legend_labels, marker_mode = c("none", "circles")) {
+  marker_mode <- match.arg(marker_mode)
+  map_obj <- leaflet(options = leafletOptions(minZoom = 9)) %>%
+    addProviderTiles(providers$CartoDB.VoyagerNoLabels)
+
+  layer_specs <- tibble(
+    col = columns,
+    threshold = c("<= 20 min", "<= 30 min", "<= 45 min"),
+    label = glue("{scenario_label}: {threshold}")
+  )
+
+  shared_domain <- unlist(sf_data[columns], use.names = FALSE)
+  shared_pal <- colorBin(
+    palette = palette_colors,
+    domain = shared_domain,
+    bins = bins,
+    na.color = "#d9d9d9",
+    pretty = FALSE
+  )
+
+  for (i in seq_len(nrow(layer_specs))) {
+    spec <- layer_specs[i, ]
+    group_data <- sf_data %>%
+      mutate(
+        metric_value = .data[[spec$col[[1]]]],
+        popup_html = glue(
+          "<strong>Tract:</strong> {NAME}<br/>",
+          "<strong>{spec$label[[1]]}:</strong> {ifelse(is.na(metric_value), 'Not reachable', round(metric_value, 1))}<br/>",
+          "<strong>Median income:</strong> {hhinc_label}<br/>",
+          "<strong>Minority share:</strong> {pct_minority_label}<br/>",
+          "<strong>Zero-vehicle HH:</strong> {pct_zero_vehicle_label}"
+        )
+      )
+
+    map_obj <- map_obj %>%
+      addPolygons(
+        data = group_data,
+        fillColor = ~shared_pal(metric_value),
+        fillOpacity = 0.84,
+        color = "#faf7f2",
+        weight = 0.5,
+        popup = ~popup_html,
+        group = spec$label[[1]],
+        highlightOptions = highlightOptions(weight = 2, color = "#111111", bringToFront = TRUE)
+      )
+  }
+
+  if (marker_mode == "circles") {
+    map_obj <- add_thematic_destination_markers(map_obj, destinations_ll)
+  }
+
+  legend_colors <- unname(shared_pal(c(0, 1, 3, 5)))
+
+  map_obj %>%
+    addControl(
+      make_swatch_legend_html(glue("{scenario_label}: destinations reachable"), legend_colors, legend_labels),
+      position = "bottomright"
+    ) %>%
+    addLayersControl(
+      baseGroups = layer_specs$label,
+      overlayGroups = if (marker_mode == "circles") "Destinations" else character(0),
+      options = layersControlOptions(collapsed = FALSE),
+      position = "topleft"
+    )
+}
+
+make_equity_scatter <- function(data, x_col, x_label, title) {
+  plot_data <- data %>%
+    st_drop_geometry() %>%
+    select(NAME, all_of(x_col), bus_rail_mean_tt) %>%
+    rename(x_value = all_of(x_col)) %>%
+    filter(!is.na(x_value), !is.na(bus_rail_mean_tt))
+
+  fit <- lm(bus_rail_mean_tt ~ x_value, data = plot_data)
+  fit_grid <- tibble(x_value = seq(min(plot_data$x_value), max(plot_data$x_value), length.out = 100)) %>%
+    mutate(y_hat = predict(fit, newdata = .))
+
+  plot_ly(
+    data = plot_data,
+    x = ~x_value,
+    y = ~bus_rail_mean_tt,
+    type = "scatter",
+    mode = "markers",
+    marker = list(size = 7, color = "#5a8f67", opacity = 0.65),
+    text = ~glue("Tract: {NAME}<br>{x_label}: {round(x_value, 1)}<br>Mean travel time: {round(bus_rail_mean_tt, 1)} min"),
+    hoverinfo = "text",
+    showlegend = FALSE
+  ) %>%
+    add_lines(
+      data = fit_grid,
+      x = ~x_value,
+      y = ~y_hat,
+      line = list(color = "#2d5d3f", width = 2),
+      inherit = FALSE,
+      hoverinfo = "skip",
+      showlegend = FALSE
+    ) %>%
+    layout(
+      title = title,
+      xaxis = list(title = x_label),
+      yaxis = list(title = "Bus + rail mean travel time (min)", tickvals = c(0, 10, 20, 30, 45, 60))
+    ) %>%
+    layout(plotly_theme)
+}
+
+plotly_theme <- list(
+  paper_bgcolor = "#f6f2ea",
+  plot_bgcolor = "#f6f2ea",
+  font = list(color = "#1d1d1b", family = "Georgia"),
+  xaxis = list(gridcolor = "#d9d2c3", zerolinecolor = "#d9d2c3"),
+  yaxis = list(gridcolor = "#d9d2c3", zerolinecolor = "#d9d2c3")
+)
+```
+
+# Introduction
+
+This analysis examines **public transit accessibility and equity** across **Atlanta** using the **MARTA** system. It compares tract-level accessibility under **two scenarios**: **rail only** and the full MARTA network of **bus plus rail**.
+
+The analysis focuses on **access to key destinations**, including major **job centers, universities, hospitals**, and the **airport**. Accessibility is measured by how many of these destinations can be reached from each census tract within a set of **travel-time thresholds**, showing how access varies across neighborhoods.
+
+It also considers whether differences in transit accessibility align with **socioeconomic need**, with particular attention to **median household income, percent minority, and percent zero-vehicle households**.
+
+# Data and Study Area
+
+This analysis uses four main data sources:
+
+**Census tract boundaries and American Community Survey (ACS) attributes:** Census tracts provide the main geographic unit for the analysis and align with socioeconomic data used for the equity component. ACS variables include median household income, percent minority, and percent zero-vehicle households.
+
+**MARTA GTFS data:** GTFS data provides geospatial features of the MARTA transit network, including rail lines, bus routes, stations, and stops, in addition to service schedules.
+
+**OpenStreetMap walking network:** OpenStreetMap data provide the pedestrian network used to represent walk connections to transit, including streets and paths relevant to pedestrian travel.
+
+**Destination point layer:** A manually created destination layer identifies selected policy-relevant locations used to represent key access needs across the city, including job centers, universities, hospitals, and the airport.
+
+```{r map-reference}
+browsable(tagList(
+  small_marker_css,
+  reference_map %>%
+    fitBounds(
+      lng1 = reference_map_bounds[["xmin"]],
+      lat1 = reference_map_bounds[["ymin"]],
+      lng2 = reference_map_bounds[["xmax"]],
+      lat2 = reference_map_bounds[["ymax"]]
+    ) %>%
+    add_reference_destination_markers(destinations_ll) %>%
+    addControl(reference_legend_html, position = "bottomright") %>%
+    addLayersControl(
+      overlayGroups = c("Census tracts", "Rail lines", "Bus stops", "Rail stations", "Destinations"),
+      options = layersControlOptions(collapsed = FALSE),
+      position = "topleft"
+    )
+))
+```
+
+# Methods
+
+## Tools and packages
+
+This analysis was completed in **R** using packages for data wrangling, spatial analysis, transit routing, mapping, and visualization. Key packages include `tidyverse`, `sf`, `sfnetworks`, `leaflet`, `plotly`, and `scales`.
+
+## Data preparation
+
+Census tracts were used as the main analysis geography. Each tract was represented by a **single internal origin point (centroid)** to provide a consistent starting location for tract-level accessibility analysis.
+
+MARTA GTFS data was selected to represent **scheduled service during a weekday morning peak period**. Two transit scenarios were evaluated: rail only and the full MARTA network of bus plus rail.
+
+The OpenStreetMap network was **filtered to retain pedestrian-relevant streets and paths** while excluding highways and other non-walkable roads. This walking network was used to estimate access from tract origins to nearby transit stops and stations.                                                                                                                      
+
+## Accessibility and equity approach
+
+Accessibility was evaluated by estimating the **fastest scheduled trip from each census tract to each destination** under two scenarios: rail only and the full MARTA network of bus plus rail. Travelers were assumed to access transit by walking up to **0.5 miles (800 meters)**, used here as a reasonable **approximation of a 10-minute walk**.
+
+Destination-level travel times were then summarized into **tract-level accessibility measures**. The main indicators are the numbers of **destinations reachable within 20, 30, and 45 minutes**, showing accessibility within practical travel times and where longer trips are required. **Mean travel time** across all selected destinations is also used to **summarize the overall transit burden** faced by residents in each tract. **The equity analysis relates** these **accessibility patterns** to tract-level **socioeconomic need**.
+
+## Workflow example
+
+The workflow maps below illustrate how tract origins were linked to nearby transit using realistic walking estimates. The second map shows an example of the shortest rail route from a tract origin to a selected destination.
+
+```{r walking-catchment-map}
+nearby_transit_legend_html <- make_component_legend_html(
+  "Nearby transit identification",
+  tibble::tribble(
+    ~type, ~color, ~label,
+    "line", "#bc6c25", "Census tract boundary",
+    "line", "#6a994e", "0.5-mile access screen",
+    "point", "#d1495b", "Tract centroid",
+    "point", "#355070", "Candidate rail station",
+    "point", "#2a9d8f", "Candidate bus stop"
+  )
+)
+
+browsable(tagList(
+  leaflet(options = leafletOptions(minZoom = 9)) %>%
+    addProviderTiles(providers$CartoDB.VoyagerNoLabels) %>%
+    addPolygons(
+      data = tracts_leaflet %>% filter(GEOID == walk_example_geoid),
+      fillColor = "#f4a261",
+      fillOpacity = 0.10,
+      color = "#bc6c25",
+      weight = 2,
+      popup = ~glue("<strong>Example tract:</strong> {NAME}<br/><strong>GEOID:</strong> {GEOID}")
+    ) %>%
+    addPolygons(
+      data = walk_threshold_ring,
+      fillColor = "#d7e4d4",
+      fillOpacity = 0.10,
+      color = "#6a994e",
+      weight = 2
+    ) %>%
+    addCircleMarkers(
+      data = st_transform(walk_example_origin, 4326),
+      radius = 4,
+      color = "#ffffff",
+      weight = 1,
+      fillColor = "#d1495b",
+      fillOpacity = 1,
+      popup = "Example tract centroid"
+    ) %>%
+    addCircleMarkers(
+      data = walk_example_stops_vis,
+      radius = 5,
+      color = "#ffffff",
+      weight = 1,
+      fillColor = ~ifelse(stop_type == "Rail station", "#355070", "#2a9d8f"),
+      fillOpacity = 0.9,
+      label = ~stop_name,
+      popup = ~glue("<strong>{stop_name}</strong><br/>Type: {stop_type}")
+    ) %>%
+    addControl(nearby_transit_legend_html, position = "bottomright")
+))
+```
+
+```{r route-demo-map}
+route_components_legend_html <- make_component_legend_html(
+  "Example trip",
+  tibble::tribble(
+    ~type, ~color, ~label,
+    "line", "#bc6c25", "Origin tract boundary",
+    "line", "#EE3124", "Red line",
+    "line", "#6c757d", "Transit access links",
+    "point", "#355070", "Rail stations",
+    "point", "#7b24c8", "Origin tract centroid",
+    "point", "#2c7ed6", "Destination"
+  )
+)
+
+browsable(tagList(
+  leaflet(options = leafletOptions(minZoom = 10)) %>%
+    addProviderTiles(providers$CartoDB.VoyagerNoLabels) %>%
+    addPolygons(
+      data = tracts_leaflet %>% filter(GEOID == buckhead_geoid),
+      fillColor = "#f4a261",
+      fillOpacity = 0.10,
+      color = "#bc6c25",
+      weight = 2,
+      popup = ~glue("<strong>Example origin tract</strong><br/>{NAME}")
+    ) %>%
+    addPolylines(
+      data = workflow_rail_lines,
+      color = ~unname(rail_line_colors[route_short_name]),
+      weight = 4,
+      opacity = 0.9,
+      popup = ~glue("<strong>{route_short_name} line</strong>")
+    ) %>%
+    addPolylines(
+      data = origin_station_link,
+      color = "#6c757d",
+      weight = 3,
+      opacity = 0.95,
+      popup = "Origin-to-station link"
+    ) %>%
+    addPolylines(
+      data = station_destination_link,
+      color = "#6c757d",
+      weight = 3,
+      opacity = 0.95,
+      popup = "Station-to-destination link"
+    ) %>%
+    addCircleMarkers(
+      data = buckhead_origin,
+      radius = 4,
+      color = "#ffffff",
+      weight = 1,
+      fillColor = "#7b24c8",
+      fillOpacity = 1,
+      popup = "Origin tract centroid"
+    ) %>%
+    addCircleMarkers(
+      data = buckhead_station,
+      radius = 4,
+      color = "#ffffff",
+      weight = 1,
+      fillColor = "#355070",
+      fillOpacity = 1,
+      popup = "Boarding station: Buckhead Station (Red Line)"
+    ) %>%
+    addCircleMarkers(
+      data = midtown_station,
+      radius = 4,
+      color = "#ffffff",
+      weight = 1,
+      fillColor = "#355070",
+      fillOpacity = 1,
+      popup = "Alighting station: Midtown Station"
+    ) %>%
+    addCircleMarkers(
+      data = gatech_point,
+      radius = 4,
+      color = "#ffffff",
+      weight = 1,
+      fillColor = "#2c7ed6",
+      fillOpacity = 1,
+      popup = "Destination: Georgia Tech"
+    ) %>%
+    addControl(route_components_legend_html, position = "bottomright")
+))
+```
+
+# Accessibility Results
+
+**Cumulative accessibility** is the main focus of this analysis. The maps below show how many key destinations are reachable within 20, 30, and 45 minutes under the two transit scenarios. Additional **difference maps** highlight where bus service expands access beyond the rail network alone.                                                 
+
+**Midtown** is included as a **sample job-center destination** to illustrate how transit travel times vary across the city under each scenario.                                                        
+
+The **table** below **summarizes** the **average number of destinations reachable** across census tracts under each scenario, along with the **average difference** when bus service is included.   
+
+```{r reachability-summary}
+summary_reachability %>%
+  mutate(across(where(is.numeric), ~round(.x, 2))) %>%
+  knitr::kable(
+    col.names = c("Scenario", "<= 20 min", "<= 30 min", "<= 45 min")
+  )
+```
+
+```{r threshold-maps}
+tagList(
+  tags$h4("Rail-only cumulative accessibility"),
+  make_threshold_toggle_map(
+    tracts_leaflet,
+    c("rail_only_n_20", "rail_only_n_30", "rail_only_n_45"),
+    "Rail only",
+    count_palette,
+    count_bins,
+    count_labels,
+    marker_mode = "none"
+  ),
+  tags$h4("Bus + rail cumulative accessibility"),
+  make_threshold_toggle_map(
+    tracts_leaflet,
+    c("bus_rail_n_20", "bus_rail_n_30", "bus_rail_n_45"),
+    "Bus + rail",
+    count_palette,
+    count_bins,
+    count_labels,
+    marker_mode = "none"
+  )
+)
+```
+
+```{r improvement-maps}
+tagList(
+  tags$h4("Difference in destinations reachable within 20 minutes"),
+  make_leaflet_map(
+    tracts_leaflet,
+    "diff_n_20",
+    difference_palette,
+    "Difference in destinations reachable within 20 minutes",
+    bins = improvement_bins,
+    legend_title = "Difference in destinations reachable",
+    legend_labels = improvement_labels,
+    marker_mode = "none"
+  ),
+  tags$h4("Difference in destinations reachable within 30 minutes"),
+  make_leaflet_map(
+    tracts_leaflet,
+    "diff_n_30",
+    difference_palette,
+    "Difference in destinations reachable within 30 minutes",
+    bins = improvement_bins,
+    legend_title = "Difference in destinations reachable",
+    legend_labels = improvement_labels,
+    marker_mode = "none"
+  ),
+  tags$h4("Difference in destinations reachable within 45 minutes"),
+  make_leaflet_map(
+    tracts_leaflet,
+    "diff_n_45",
+    difference_palette,
+    "Difference in destinations reachable within 45 minutes",
+    bins = improvement_bins,
+    legend_title = "Difference in destinations reachable",
+    legend_labels = improvement_labels,
+    marker_mode = "none"
+  )
+)
+```
+
+```{r map-midtown}
+tags$h4("Scheduled travel time to Midtown by census tract (min)")
+make_toggle_tt_map(
+  tracts_leaflet,
+  "rail_only_midtown_tt",
+  "bus_rail_midtown_tt",
+  "Scheduled travel time to Midtown (min)",
+  travel_time_palette,
+  travel_time_bins,
+  marker_mode = "circles"
+)
+```
+
+```{r reachability-bar}
+reachability_bar_data <- tracts_leaflet %>%
+  st_drop_geometry() %>%
+  summarise(
+    rail_only_20 = mean(rail_only_n_20, na.rm = TRUE),
+    rail_only_30 = mean(rail_only_n_30, na.rm = TRUE),
+    rail_only_45 = mean(rail_only_n_45, na.rm = TRUE),
+    bus_rail_20 = mean(bus_rail_n_20, na.rm = TRUE),
+    bus_rail_30 = mean(bus_rail_n_30, na.rm = TRUE),
+    bus_rail_45 = mean(bus_rail_n_45, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "metric", values_to = "value") %>%
+  separate(metric, into = c("scenario", "threshold"), sep = "_(?=[^_]+$)") %>%
+  mutate(
+    scenario = recode(scenario, rail_only = "Rail only", bus_rail = "Bus + rail"),
+    threshold = factor(threshold, levels = c("20", "30", "45"), labels = c("<= 20 min", "<= 30 min", "<= 45 min"))
+  )
+
+plot_ly(
+  data = reachability_bar_data,
+  x = ~threshold,
+  y = ~value,
+  color = ~scenario,
+  colors = c("Rail only" = "#8fbf8cf", "Bus + rail" = "#2d5d3f"),
+  type = "bar",
+  text = ~glue("{scenario}<br>{threshold}<br>Average destinations: {round(value, 2)}"),
+  hoverinfo = "text"
+) %>%
+  layout(
+    title = "Average destinations reachable by scenario and threshold",
+    barmode = "group",
+    xaxis = list(title = ""),
+    yaxis = list(title = "Average destinations reachable")
+  ) %>%
+  layout(plotly_theme)
+```
+
+# Equity Results
+
+This analysis places the accessibility results in demographic context. The maps show how **income, minority share, and zero-vehicle households** are distributed across Atlanta, while the plots examine whether **lower accessibility** and **longer travel times** are concentrated in **higher-need areas**.
+
+```{r map-demographics}
+income_map <- make_demographic_map(tracts_leaflet, "hhinc", "Median household income", demographic_specs[[1]]$palette)
+minority_map <- make_demographic_map(tracts_leaflet, "pct_minority", "Percent minority", demographic_specs[[2]]$palette)
+zero_vehicle_map <- make_demographic_map(tracts_leaflet, "pct_zero_vehicle", "Percent zero-vehicle households", demographic_specs[[3]]$palette)
+
+browsable(
+  tagList(
+    tags$h4("Median household income"),
+    income_map,
+    tags$h4("Percent minority"),
+    minority_map,
+    tags$h4("Percent zero-vehicle households"),
+    zero_vehicle_map
+  )
+)
+```
+
+```{r equity-scatterplots}
+subplot(
+  make_equity_scatter(tracts_leaflet, "hhinc", "Median household income", "Travel time vs income"),
+  make_equity_scatter(tracts_leaflet, "pct_minority", "Percent minority", "Travel time vs percent minority"),
+  make_equity_scatter(tracts_leaflet, "pct_zero_vehicle", "Percent zero-vehicle households", "Travel time vs zero-vehicle households"),
+  nrows = 1,
+  margin = 0.04,
+  shareY = TRUE
+ ) %>%
+  layout(
+    title = "Mean travel time vs socioeconomic indicators",
+    xaxis = list(title = "Median household income"),
+    xaxis2 = list(title = "Percent minority"),
+    xaxis3 = list(title = "Percent zero-vehicle households")
+  )
+```
+
+```{r equity-boxplot}
+income_box_data <- tracts_leaflet %>%
+  st_drop_geometry() %>%
+  filter(!is.na(bus_rail_mean_tt), !is.na(hhinc)) %>%
+  mutate(income_quartile = factor(ntile(hhinc, 4), labels = c("Q1", "Q2", "Q3", "Q4")))
+
+minority_box_data <- tracts_leaflet %>%
+  st_drop_geometry() %>%
+  filter(!is.na(bus_rail_mean_tt), !is.na(pct_minority)) %>%
+  mutate(minority_quartile = factor(ntile(pct_minority, 4), labels = c("Q1", "Q2", "Q3", "Q4")))
+
+income_box <- plot_ly(
+  data = income_box_data,
+  x = ~income_quartile,
+  y = ~bus_rail_mean_tt,
+  type = "box",
+  color = I("#456a4e"),
+  boxpoints = "all",
+  jitter = 0.2,
+  pointpos = 0,
+  marker = list(color = "#456a4e", opacity = 0.55, size = 5),
+  line = list(color = "#2d5d3f"),
+  hovertext = ~glue("Tract: {NAME}<br>Income quartile: {income_quartile}<br>Mean travel time: {round(bus_rail_mean_tt, 1)} min"),
+  hoverinfo = "text",
+  showlegend = FALSE
+) %>%
+  layout(
+    title = "Mean travel time by income quartile",
+    xaxis = list(title = "Income quartile"),
+    yaxis = list(title = "Bus + rail mean travel time (min)")
+  ) %>%
+  layout(plotly_theme)
+
+minority_box <- plot_ly(
+  data = minority_box_data,
+  x = ~minority_quartile,
+  y = ~bus_rail_mean_tt,
+  type = "box",
+  color = I("#8fbf8c"),
+  boxpoints = "all",
+  jitter = 0.2,
+  pointpos = 0,
+  marker = list(color = "#8fbf8cf", opacity = 0.55, size = 5),
+  line = list(color = "#5f8f74"),
+  hovertext = ~glue("Tract: {NAME}<br>Minority quartile: {minority_quartile}<br>Mean travel time: {round(bus_rail_mean_tt, 1)} min"),
+  hoverinfo = "text",
+  showlegend = FALSE
+) %>%
+  layout(
+    title = "Mean travel time by percent-minority quartile",
+    xaxis = list(title = "Percent-minority quartile"),
+    yaxis = list(title = "Bus + rail mean travel time (min)")
+  ) %>%
+  layout(plotly_theme)
+
+subplot(income_box, minority_box, nrows = 1, margin = 0.05, shareY = TRUE) %>%
+  layout(
+    title = "Mean travel time by income and percent-minority quartiles",
+    xaxis = list(title = "Income quartile"),
+    xaxis2 = list(title = "Percent-minority quartile")
+  )
+```
+
+# Discussion
+
+This analysis shows that a multimodal view of transit accessibility provides a more complete picture of how MARTA connects people to key destinations across Atlanta. While it is expected that including bus service would expand the network beyond rail alone, the results show the scale of that difference: on average, the **number of destinations reachable** from each tract **increased from 1.36 to 3.30 within 20 minutes**, from **1.36 to 4.04 within 30 minutes**, and from **1.36 to 4.73 within 45 minutes** when the **full bus-and-rail network** was considered.
+
+These results suggest that evaluating MARTA through a **rail-only** lens can substantially **understate accessibility**, particularly in areas outside the immediate rail corridors. A **multimodal accessibility** approach **better reflects how the system operates** in practice, where bus connections often extend the reach of the fixed-rail network and improve access to jobs, education, health care, and the airport.
+
+The equity analysis adds an important dimension to these results. The **plotted relationships** suggest that mean travel times were not distributed evenly across Atlanta: tracts with **lower median household incomes** generally appear to have **longer travel times**, while tracts with **higher minority shares** and **higher shares of zero-vehicle households** also tend to **face longer trips**. The association is most visible for percent minority, while the pattern for percent zero-vehicle households appears weaker. 
+
+Together, these results suggest that **transit accessibility** is **not only** a question of **network coverage**, but also **one of equity** in access to essential destinations.
+
+# Limitations
+
+- **Tract centroid:** Each census tract is represented by a single centroid point, so the analysis does not capture within-tract variation in population distribution.
+- **Time period:** The analysis is limited to a weekday morning peak period and does not reflect accessibility at other times of day or on weekends.
+- **Schedule service data:** Transit travel times are based on scheduled GTFS service and do not reflect real-world operating conditions such as delays, reliability, or crowding.
+- **Selective destination layer:** The destination layer is selective and represents only seven destinations rather than broader urban activity patterns.
+- **Walking approximation:** The OpenStreetMap walking network is an approximation of pedestrian connectivity and may overstate or understate walk access in some locations.

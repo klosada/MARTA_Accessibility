@@ -1,0 +1,8 @@
+.Renviron
+.Rhistory
+.RData
+.DS_Store
+
+data_raw/
+
+report.knit.md
