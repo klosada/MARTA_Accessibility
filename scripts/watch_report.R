@@ -8,7 +8,7 @@ if (is.na(interval) || interval <= 0) {
 suppressPackageStartupMessages(library(rmarkdown))
 
 target <- normalizePath("report.Rmd", mustWork = TRUE)
-output_file <- "report.html"
+output_file <- "index.html"
 
 render_report <- function() {
   tryCatch(
