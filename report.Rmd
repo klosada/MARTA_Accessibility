@@ -1,7 +1,7 @@
 ---
 title: "MARTA Accessibility and Equity Analysis"
 author: "Katherine Losada"
-date: "Fall 2024; Updated Winter 2026"
+date: "2025"
 output:
   html_document:
     theme: sandstone
