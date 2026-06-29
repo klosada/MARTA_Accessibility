@@ -2,7 +2,7 @@
 
 **Author:** Katherine Losada
 
-**Live report:** https://github.com/klosada/MARTA_Accessibility_Equity
+**Live report:** https://klosada.github.io/MARTA_Accessibility_Equity
 
 ## Overview
 
