@@ -1,7 +1,8 @@
 # MARTA Accessibility and Equity Analysis
 
 **Author:** Katherine Losada
-**Live report:** https://klosada.github.io/MARTA_Accessibility/
+
+**Live report:** https://github.com/klosada/MARTA_Accessibility_Equity
 
 ## Overview
 

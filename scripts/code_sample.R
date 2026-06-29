@@ -7,7 +7,7 @@
 # GTFS, and OpenStreetMap data, builds a pedestrian network,
 # computes multimodal transit accessibility for every census
 # tract in the study area, and summarizes results for an equity
-# analysis. Full project: https://github.com/klosada/MARTA_Accessibility
+# analysis. Full project: https://github.com/klosada/MARTA_Accessibility_Equity
 #
 # This excerpt includes the three components most representative
 # of the analytical approach:
