@@ -4,7 +4,7 @@
 #
 # This file is an excerpt from a larger R pipeline (9 scripts, orchestrated by 99_run_all.R)
 # that downloads ACS, GTFS, and OpenStreetMap data, builds a pedestrian network, computes 
-# multimodal transit accessibility for every census tract in the study area, and summarizes 
+# multimodal transit accessibility for every census tract in Atlanta, and summarizes 
 # results for an equity analysis. 
 #
 # Full Code (GitHub repository): https://github.com/klosada/MARTA_Accessibility_Equity 
