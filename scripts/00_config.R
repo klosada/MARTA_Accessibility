@@ -17,24 +17,27 @@ suppressPackageStartupMessages({
   library(glue)
   library(purrr)
 })
-
+# Defining study area for metro Atlanta, GA.
 study_crs <- 5070
-acs_year <- 2023
 state_fips <- "13"
-study_counties <- c("063", "089", "121") # Clayton, DeKalb, Fulton
+study_counties <- c("063", "089", "121") 
 study_county_names <- c("Clayton", "DeKalb", "Fulton")
 
+# Walking speed and maximum distance assumptions for transit access.
 walk_speed_m_per_min <- 80
 max_walk_minutes <- 10
 max_walk_meters <- walk_speed_m_per_min * max_walk_minutes
 dest_walk_meters <- 800
 
+# Weekday peak morning commute for a representative transit service period.
 analysis_weekday <- "wednesday"
 peak_start <- "07:00:00"
 peak_end <- "10:00:00"
 peak_time_range <- c(peak_start, peak_end)
 max_transfers <- 3L
 
+# ACS demographic variables for transit equity analysis.
+acs_year <- 2023
 acs_vars <- c(
   hhinc = "B19013_001",
   total_pop = "B03002_001",
@@ -43,6 +46,8 @@ acs_vars <- c(
   zero_vehicle_hh = "B08201_002"
 )
 
+# Policy-relevant destinations representing key access needs across Atlanta:
+# major job centers, universities, hospitals, and the airport.
 destinations_tbl <- tibble::tribble(
   ~dest_id, ~dest_name, ~dest_type, ~lon, ~lat,
   "midtown", "Midtown", "job_center", -84.3863, 33.7812,
@@ -54,6 +59,7 @@ destinations_tbl <- tibble::tribble(
   "atl", "Hartsfield-Jackson Atlanta International Airport", "airport", -84.4277, 33.6407
 )
 
+# Defining data file paths for consistency and reuse.
 dirs <- list(
   raw_gtfs = here::here("data_raw", "gtfs"),
   raw_boundaries = here::here("data_raw", "boundaries"),
