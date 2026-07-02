@@ -1,15 +1,17 @@
 source(here::here("scripts", "00_utils.R"))
 ensure_directories()
 
+# NSA (Neighborhood Statistical Area) boundary used to clip census tracts to the Atlanta study area.
 nsa_path <- list.files(dirs$raw_boundaries, pattern = "\\.(gpkg|geojson|shp)$", full.names = TRUE)
 if (!length(nsa_path)) {
-  stop("Place the Atlanta neighborhood / NSA boundary file in data_raw/boundaries before running the census script.")
+  stop("Atlanta / NSA boundary file not found.")
 }
 
 nsa_union <- st_read(nsa_path[[1]], quiet = TRUE) %>%
   st_transform(study_crs) %>%
   st_union()
 
+# Pulls ACS tract boundaries and equity variables for the three study counties.
 tracts_acs <- tidycensus::get_acs(
   geography = "tract",
   variables = acs_vars,
@@ -31,10 +33,13 @@ tracts_acs <- tidycensus::get_acs(
     total_hh = total_hhE,
     geometry
   ) %>%
+  # st_point_on_surface ensures the origin point falls inside the polygon,
+  # unlike st_centroid which can fall outside irregular tract boundaries.
   mutate(origin_geom = st_point_on_surface(geometry)) %>%
   filter(lengths(st_intersects(origin_geom, nsa_union)) > 0) %>%
   select(-origin_geom)
 
+# Creates origin points from tract centroids for routing.
 origins <- tracts_acs %>%
   mutate(origin_geom = st_point_on_surface(geometry)) %>%
   st_set_geometry("origin_geom") %>%
