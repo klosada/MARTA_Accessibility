@@ -1,12 +1,15 @@
 source(here::here("scripts", "00_utils.R"))
 ensure_directories()
 
+# Builds a routable pedestrian network from a local OpenStreetMap extract,
+# filtered to walkable road types and clipped to the Atlanta study area.
+
 tracts_acs <- readRDS(here::here("data_processed", "tracts_acs.rds"))
 tracts_ll <- tracts_acs %>% st_transform(4326)
 osm_pbf <- list.files(dirs$raw_osm, pattern = "\\.osm\\.pbf$", full.names = TRUE)
 
 if (!length(osm_pbf)) {
-  stop("Place a Georgia or Atlanta .osm.pbf extract in data_raw/osm before running the walking-network script.")
+  stop("No Georgia or Atlanta .osm.pbf extract in data_raw/osm.")
 }
 
 study_area_ll <- tracts_ll %>%
@@ -23,9 +26,9 @@ read_osm_layer <- function(layer_name) {
     stringsAsFactors = FALSE
   )
 }
-
 message("Reading clipped OSM lines from local PBF...")
 walk_lines <- read_osm_layer("lines") %>%
+  # Retain only pedestrian-relevant road types, excluding highways and motorways.
   filter(highway %in% c(
     "footway", "path", "pedestrian", "living_street", "residential",
     "service", "unclassified", "tertiary", "secondary", "primary"
