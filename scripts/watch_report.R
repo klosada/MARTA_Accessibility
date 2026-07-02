@@ -1,3 +1,5 @@
+# Dev tool: auto-renders report.Rmd on file save during development.
+
 args <- commandArgs(trailingOnly = TRUE)
 interval <- if (length(args)) as.numeric(args[[1]]) else 1
 

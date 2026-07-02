@@ -1,6 +1,8 @@
 source(here::here("scripts", "00_utils.R"))
 ensure_directories()
 
+# Generates accessibility and travel time maps for all scenarios and destinations.
+
 tmap_mode("plot")
 
 tracts_final <- readRDS(here::here("data_processed", "tracts_final.rds"))

@@ -1,6 +1,8 @@
 source(here::here("scripts", "00_utils.R"))
 ensure_directories()
 
+# Generates equity scatter plots and boxplots relating transit accessibility to demographic indicators.
+
 tracts_final <- readRDS(here::here("data_processed", "tracts_final.rds")) %>%
   st_drop_geometry() %>%
   mutate(income_quartile = ntile(hhinc, 4))
