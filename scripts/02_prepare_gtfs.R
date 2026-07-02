@@ -1,6 +1,9 @@
 source(here::here("scripts", "00_utils.R"))
 ensure_directories()
 
+# Reads MARTA GTFS feed, filters to bus and rail routes (route_type 1 and 3),
+# and prepares stop times for two transit scenarios: rail only and bus + rail.
+
 gtfs_path <- find_gtfs_zip()
 gtfs_full <- tidytransit::read_gtfs(gtfs_path) %>%
   tidytransit::interpolate_stop_times()
