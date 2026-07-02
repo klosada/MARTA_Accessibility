@@ -1,26 +1,31 @@
 source(here::here("scripts", "00_config.R"))
 
+# Creates output directories if they don't exist yet.
 ensure_directories <- function() {
   walk(dirs, dir.create, recursive = TRUE, showWarnings = FALSE)
   invisible(TRUE)
 }
 
+# Saves an R object to an RDS file.
 save_rds <- function(x, path) {
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
   saveRDS(x, path)
   invisible(path)
 }
 
+# Saves an sf object to a GeoPackage layer (for external GIS use).
 write_gpkg <- function(x, path, layer) {
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
   suppressWarnings(sf::st_write(x, path, layer = layer, delete_layer = TRUE, quiet = TRUE))
   invisible(path)
 }
 
+# Converts seconds to minutes.
 seconds_to_minutes <- function(x) {
   x / 60
 }
 
+# Converts weekdays to numeric index for accurate chronological order in analysis and visuals.
 weekday_index <- function(x) {
   c(
     monday = 1L, tuesday = 2L, wednesday = 3L, thursday = 4L,
@@ -28,6 +33,7 @@ weekday_index <- function(x) {
   )[[tolower(x)]]
 }
 
+# Selects a representative Wednesday from the GTFS feed with no service exceptions.
 choose_gtfs_analysis_date <- function(gtfs, target_weekday = analysis_weekday) {
   if (!"calendar" %in% names(gtfs)) {
     stop("GTFS feed must include a calendar table.")
@@ -70,8 +76,6 @@ choose_gtfs_analysis_date <- function(gtfs, target_weekday = analysis_weekday) {
 
     active_ids <- union(setdiff(base_ids, removed_ids), added_ids)
 
-    # Prefer a regular service day with no calendar exceptions so the
-    # analysis reflects the standard weekday schedule rather than a holiday.
     if (length(active_ids) && !length(added_ids) && !length(removed_ids)) {
       return(dt)
     }
@@ -80,6 +84,7 @@ choose_gtfs_analysis_date <- function(gtfs, target_weekday = analysis_weekday) {
   stop(glue("No regular {target_weekday} date found in GTFS feed without calendar exceptions."))
 }
 
+# Locates the MARTA GTFS zip file in the raw data directory.
 find_gtfs_zip <- function() {
   gtfs_zips <- list.files(dirs$raw_gtfs, pattern = "\\.zip$", full.names = TRUE)
   if (!length(gtfs_zips)) {
@@ -88,6 +93,7 @@ find_gtfs_zip <- function() {
   gtfs_zips[[1]]
 }
 
+# Converts a GTFS stops table to an sf point object in the study CRS.
 build_stops_sf <- function(stops_tbl, crs = study_crs) {
   stops_tbl %>%
     filter(!is.na(stop_lon), !is.na(stop_lat)) %>%
@@ -95,6 +101,10 @@ build_stops_sf <- function(stops_tbl, crs = study_crs) {
     st_transform(crs)
 }
 
+# Calculates walking distance between spatial features (census tract centroids
+# to nearby transit stops) using the OpenStreetMap pedestrian network and a
+# shortest-path algorithm, retaining only connections within the 800-meter
+# maximum walkable distance threshold.
 compute_network_links <- function(network, from_sf, to_sf, from_cols, to_cols, max_dist) {
   candidate_rows <- sf::st_is_within_distance(from_sf, to_sf, dist = max_dist * 2)
 
@@ -129,6 +139,7 @@ compute_network_links <- function(network, from_sf, to_sf, from_cols, to_cols, m
   })
 }
 
+# Adds a quartile column to a data frame. Used to group ACS data into quartiles for equity analysis.
 add_quartile <- function(x, n = 4) {
   dplyr::ntile(x, n)
 }
