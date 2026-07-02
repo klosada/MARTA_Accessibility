@@ -33,7 +33,8 @@ Accessibility is measured as the number of destinations reachable from each cens
 
 ## Tech Stack
 
-R packages: `tidyverse`, `sf`, `sfnetworks` (network routing), `tidytransit` (GTFS transit routing), `tidycensus` (Census/ACS data),`  tmap`, `leaflet`,  `plotly `(mapping and visualization).
+R packages: 
+`tidyverse`, `sf`, `sfnetworks` (network routing), `tidytransit` (GTFS transit routing), `tidycensus` (Census/ACS data),`  tmap`, `leaflet`,  `plotly `(mapping and visualization).
 
 ## Project Structure
 
@@ -48,18 +49,18 @@ R packages: `tidyverse`, `sf`, `sfnetworks` (network routing), `tidytransit` (G
 │   ├── 04_prepare_destinations.R   # destination point layer
 │   ├── 05_compute_accessibility.R  # core transit-routing engine
 │   ├── 06_summarize_metrics.R      # tract-level accessibility metrics
-│   ├── 07_make_maps.R              # static maps
+│   ├── 07_make_maps.R              # interactive maps
 │   ├── 08_make_plots.R             # equity scatterplots/boxplots
 │   └── 99_run_all.R                # runs the full pipeline in order
 ├── report.Rmd                      # final report (renders to index.html)
-├── data_raw/                       # not tracked - see Setup below
+├── data_raw/                       # not tracked 
 ├── data_processed/                 # intermediate outputs (.rds, .gpkg)
 └── outputs/                        # final tables, figures, and maps
 ```
 
 ## Setup
 
-This repo does not include raw data (GTFS feeds and OSM extracts are large and/or licensed separately). To run the pipeline yourself:
+This repo does not include raw data (GTFS feeds and OSM extracts). To run the pipeline yourself:
 
 1. Set a Census API key as `CENSUS_API_KEY` in a local `.Renviron` file (not tracked).
 2. Download the current MARTA GTFS feed and place the `.zip` in `data_raw/gtfs/`.
@@ -74,4 +75,4 @@ This repo does not include raw data (GTFS feeds and OSM extracts are large and/o
 - The analysis reflects a single weekday morning peak period only.
 - Travel times are based on scheduled GTFS service, not real-time conditions (delays, reliability, crowding).
 - The destination layer is selective (7 locations) rather than a comprehensive activity-based model.
-- The OpenStreetMap walking network is an approximation and may over- or understate walk access in some areas.
+- The OpenStreetMap walking network is an approximation and walking assumptions (distance and speed) may over or understate walk access.
