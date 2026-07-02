@@ -1,6 +1,9 @@
 source(here::here("scripts", "00_utils.R"))
 ensure_directories()
 
+# Computes door-to-door transit travel times from every census tract to each
+# destination under two scenarios: rail only and full bus + rail network.
+
 origins <- readRDS(here::here("data_processed", "origins.rds"))
 destinations <- readRDS(here::here("data_processed", "destinations.rds"))
 all_stops <- readRDS(here::here("data_processed", "all_stops.rds"))
@@ -10,6 +13,26 @@ stop_times_rail <- readRDS(here::here("data_processed", "stop_times_rail.rds"))
 walk_net <- readRDS(here::here("data_processed", "walk_net.rds"))
 partial_path <- here::here("data_processed", "travel_times_long_partial.rds")
 
+# Computes walk links from each tract origin to nearby transit stops.
+compute_origin_stop_links <- function(origins_sf, stops_sf) {
+  compute_network_links(
+    network = walk_net,
+    from_sf = origins_sf,
+    to_sf = stops_sf,
+    from_cols = c("GEOID"),
+    to_cols = c("stop_id", "stop_name"),
+    max_dist = max_walk_meters
+  )
+}
+
+message("Building origin-stop lookup...")
+origin_links <- bind_rows(
+  compute_origin_stop_links(origins, rail_stops) %>% mutate(scenario = "rail_only"),
+  compute_origin_stop_links(origins, all_stops) %>% mutate(scenario = "bus_rail")
+)
+
+# Computes walk time from each policy-relevant destination to nearest 
+# transit stops, providing the final walk leg needed for travel time estimates.
 build_destination_lookup <- function(destinations_sf, stops_sf, scenario_name) {
   lookup <- compute_network_links(
     network = walk_net,
@@ -42,26 +65,12 @@ destination_stop_lookup <- bind_rows(
   build_destination_lookup(destinations, all_stops, "bus_rail")
 )
 
-compute_origin_stop_links <- function(origins_sf, stops_sf) {
-  compute_network_links(
-    network = walk_net,
-    from_sf = origins_sf,
-    to_sf = stops_sf,
-    from_cols = c("GEOID"),
-    to_cols = c("stop_id", "stop_name"),
-    max_dist = max_walk_meters
-  )
-}
-
-message("Building origin-stop lookup...")
-origin_links <- bind_rows(
-  compute_origin_stop_links(origins, rail_stops) %>% mutate(scenario = "rail_only"),
-  compute_origin_stop_links(origins, all_stops) %>% mutate(scenario = "bus_rail")
-)
-
 save_rds(destination_stop_lookup, here::here("data_processed", "destination_stop_lookup.rds"))
 save_rds(origin_links, here::here("data_processed", "origin_stop_lookup.rds"))
 
+# Computes fastest scheduled transit trip from each tract's walkable
+# stops to every destination, adding walk time at both the start and end
+# of the trip for a complete travel time estimate.
 calculate_origin_access <- function(origin_geoid, scenario_name, origin_link_tbl, stop_times_obj, dest_lookup_tbl) {
   candidate_stops <- origin_link_tbl %>%
     filter(GEOID == origin_geoid, scenario == scenario_name)
@@ -124,6 +133,7 @@ calculate_origin_access <- function(origin_geoid, scenario_name, origin_link_tbl
     select(GEOID, scenario, dest_id, dest_name, dest_type, travel_time_min, reachable)
 }
 
+# Saves progress every 25 tracts so interrupted runs can resume from last checkpoint.
 start_index <- 1L
 results_list <- vector("list", length(origins$GEOID))
 
@@ -160,6 +170,7 @@ for (i in seq.int(start_index, length(origins$GEOID))) {
   }
 }
 
+# Combines all tract results and saves the full travel times table.
 travel_times_long <- bind_rows(results_list)
 save_rds(travel_times_long, here::here("data_processed", "travel_times_long.rds"))
 readr::write_csv(travel_times_long, here::here("outputs", "tables", "travel_times_long.csv"))
