@@ -2,6 +2,7 @@
 title: "MARTA Accessibility and Equity Analysis"
 author: "Katherine Losada"
 date: "2025"
+knit: (function(inputFile, encoding) rmarkdown::render(inputFile, output_file = "index.html", encoding = encoding))
 output:
   html_document:
     theme: sandstone
