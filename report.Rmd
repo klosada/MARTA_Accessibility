@@ -314,27 +314,23 @@ summary_reachability <- tracts_leaflet %>%
     rail_only_n_45 = mean(rail_only_n_45, na.rm = TRUE),
     bus_rail_n_20 = mean(bus_rail_n_20, na.rm = TRUE),
     bus_rail_n_30 = mean(bus_rail_n_30, na.rm = TRUE),
-    bus_rail_n_45 = mean(bus_rail_n_45, na.rm = TRUE),
-    improvement_20 = mean(diff_n_20, na.rm = TRUE),
-    improvement_30 = mean(replace_na(bus_rail_n_30, 0) - replace_na(rail_only_n_30, 0), na.rm = TRUE),
-    improvement_45 = mean(diff_n_45, na.rm = TRUE)
+    bus_rail_n_45 = mean(bus_rail_n_45, na.rm = TRUE)
   ) %>%
   pivot_longer(everything(), names_to = "metric", values_to = "value") %>%
   separate(metric, into = c("scenario", "threshold"), sep = "_(?=[^_]+$)") %>%
   mutate(
     scenario = recode(
       scenario,
-      rail_only = "Rail only",
-      bus_rail = "Bus + rail",
-      improvement = "Average improvement"
+      rail_only_n = "Rail only",
+      bus_rail_n = "Bus + rail"
     ),
-    threshold = recode(threshold, n_20 = "<= 20 min", n_30 = "<= 30 min", n_45 = "<= 45 min", `20` = "<= 20 min", `30` = "<= 30 min", `45` = "<= 45 min")
+    threshold = recode(threshold, `20` = "<= 20 min", `30` = "<= 30 min", `45` = "<= 45 min")
   ) %>%
   pivot_wider(names_from = threshold, values_from = value)
 
 count_palette <- c("#edf8fb", "#bfd3e6", "#9ebcda", "#8c96c6")
 travel_time_palette <- c("#f7fcfd", "#e0ecf4", "#bfd3e6", "#9ebcda", "#8c96c6", "#8856a7", "#6e016b")
-difference_palette <- c("#b35806", "#f1a340", "#f7f7f7", "#998ec3", "#542788")
+difference_palette <- c("#edf8fb", "#bfd3e6", "#9ebcda", "#8c96c6")
 count_bins <- c(-0.1, 0.5, 2.5, 4.5, 7.5)
 count_labels <- c("0", "1-2", "3-4", "5-7")
 improvement_bins <- c(-0.1, 0.5, 1.5, 3.5, 7.5)
@@ -768,7 +764,7 @@ make_equity_scatter <- function(data, x_col, x_label, title) {
     y = ~bus_rail_mean_tt,
     type = "scatter",
     mode = "markers",
-    marker = list(size = 7, color = "#5a8f67", opacity = 0.65),
+    marker = list(size = 7, color = "#e0913f", opacity = 0.65),
     text = ~glue("Tract: {NAME}<br>{x_label}: {round(x_value, 1)}<br>Mean travel time: {round(bus_rail_mean_tt, 1)} min"),
     hoverinfo = "text",
     showlegend = FALSE
@@ -777,7 +773,7 @@ make_equity_scatter <- function(data, x_col, x_label, title) {
       data = fit_grid,
       x = ~x_value,
       y = ~y_hat,
-      line = list(color = "#2d5d3f", width = 2),
+      line = list(color = "#7f2704", width = 2),
       inherit = FALSE,
       hoverinfo = "skip",
       showlegend = FALSE
@@ -796,6 +792,17 @@ plotly_theme <- list(
   font = list(color = "#1d1d1b", family = "Georgia"),
   xaxis = list(gridcolor = "#d9d2c3", zerolinecolor = "#d9d2c3"),
   yaxis = list(gridcolor = "#d9d2c3", zerolinecolor = "#d9d2c3")
+)
+```
+
+```{r echo=FALSE}
+htmltools::tags$p(
+  htmltools::tags$a(
+    href = "https://github.com/klosada/MARTA_Accessibility_Equity",
+    target = "_blank",
+    style = "color: #bfab8f; font-weight: 600; text-decoration: underline;",
+    "View source code on GitHub"
+  )
 )
 ```
 
@@ -1005,30 +1012,36 @@ browsable(tagList(
 
 # Accessibility Results
 
-**Cumulative accessibility** is the main focus of this analysis. The maps below show how many key destinations are reachable within 20, 30, and 45 minutes under the two transit scenarios. Additional **difference maps** highlight where bus service expands access beyond the rail network alone.                                                 
+**Cumulative accessibility** is the main focus of this analysis. The **bus + rail** map below shows how many key destinations are reachable within **20, 30, and 45 minutes**. Because every **rail-only** trip completes within **20 minutes**, the rail-only map is shown at a single **20-minute** threshold, which already captures all rail-reachable destinations. An additional **difference map** highlights where bus service expands access beyond the rail network alone.
 
 **Midtown** is included as a **sample job-center destination** to illustrate how transit travel times vary across the city under each scenario.                                                        
 
-The **table** below **summarizes** the **average number of destinations reachable** across census tracts under each scenario, along with the **average difference** when bus service is included.   
+The **table** below **summarizes** the **average number of destinations reachable** across census tracts under each scenario.
 
 ```{r reachability-summary}
 summary_reachability %>%
-  mutate(across(where(is.numeric), ~round(.x, 2))) %>%
+  mutate(
+    `<= 20 min` = sprintf("%.2f", `<= 20 min`),
+    `<= 30 min` = if_else(scenario == "Rail only", "—", sprintf("%.2f", `<= 30 min`)),
+    `<= 45 min` = if_else(scenario == "Rail only", "—", sprintf("%.2f", `<= 45 min`))
+  ) %>%
   knitr::kable(
-    col.names = c("Scenario", "<= 20 min", "<= 30 min", "<= 45 min")
+    col.names = c("Scenario", "<= 20 min", "<= 30 min", "<= 45 min"),
+    align = c("l", "r", "r", "r")
   )
 ```
 
 ```{r threshold-maps}
 tagList(
-  tags$h4("Rail-only cumulative accessibility"),
-  make_threshold_toggle_map(
+  tags$h4("Rail-only cumulative accessibility within 20 minutes"),
+  make_leaflet_map(
     tracts_leaflet,
-    c("rail_only_n_20", "rail_only_n_30", "rail_only_n_45"),
-    "Rail only",
+    "rail_only_n_20",
     count_palette,
-    count_bins,
-    count_labels,
+    "Rail-only destinations reachable within 20 minutes",
+    bins = count_bins,
+    legend_title = "Rail only: destinations reachable",
+    legend_labels = count_labels,
     marker_mode = "none"
   ),
   tags$h4("Bus + rail cumulative accessibility"),
@@ -1056,28 +1069,6 @@ tagList(
     legend_title = "Difference in destinations reachable",
     legend_labels = improvement_labels,
     marker_mode = "none"
-  ),
-  tags$h4("Difference in destinations reachable within 30 minutes"),
-  make_leaflet_map(
-    tracts_leaflet,
-    "diff_n_30",
-    difference_palette,
-    "Difference in destinations reachable within 30 minutes",
-    bins = improvement_bins,
-    legend_title = "Difference in destinations reachable",
-    legend_labels = improvement_labels,
-    marker_mode = "none"
-  ),
-  tags$h4("Difference in destinations reachable within 45 minutes"),
-  make_leaflet_map(
-    tracts_leaflet,
-    "diff_n_45",
-    difference_palette,
-    "Difference in destinations reachable within 45 minutes",
-    bins = improvement_bins,
-    legend_title = "Difference in destinations reachable",
-    legend_labels = improvement_labels,
-    marker_mode = "none"
   )
 )
 ```
@@ -1093,43 +1084,6 @@ make_toggle_tt_map(
   travel_time_bins,
   marker_mode = "circles"
 )
-```
-
-```{r reachability-bar}
-reachability_bar_data <- tracts_leaflet %>%
-  st_drop_geometry() %>%
-  summarise(
-    rail_only_20 = mean(rail_only_n_20, na.rm = TRUE),
-    rail_only_30 = mean(rail_only_n_30, na.rm = TRUE),
-    rail_only_45 = mean(rail_only_n_45, na.rm = TRUE),
-    bus_rail_20 = mean(bus_rail_n_20, na.rm = TRUE),
-    bus_rail_30 = mean(bus_rail_n_30, na.rm = TRUE),
-    bus_rail_45 = mean(bus_rail_n_45, na.rm = TRUE)
-  ) %>%
-  pivot_longer(everything(), names_to = "metric", values_to = "value") %>%
-  separate(metric, into = c("scenario", "threshold"), sep = "_(?=[^_]+$)") %>%
-  mutate(
-    scenario = recode(scenario, rail_only = "Rail only", bus_rail = "Bus + rail"),
-    threshold = factor(threshold, levels = c("20", "30", "45"), labels = c("<= 20 min", "<= 30 min", "<= 45 min"))
-  )
-
-plot_ly(
-  data = reachability_bar_data,
-  x = ~threshold,
-  y = ~value,
-  color = ~scenario,
-  colors = c("Rail only" = "#8fbf8c", "Bus + rail" = "#2d5d3f"),
-  type = "bar",
-  text = ~glue("{scenario}<br>{threshold}<br>Average destinations: {round(value, 2)}"),
-  hoverinfo = "text"
-) %>%
-  layout(
-    title = "Average destinations reachable by scenario and threshold",
-    barmode = "group",
-    xaxis = list(title = ""),
-    yaxis = list(title = "Average destinations reachable")
-  ) %>%
-  layout(plotly_theme)
 ```
 
 # Equity Results
@@ -1186,12 +1140,12 @@ income_box <- plot_ly(
   x = ~income_quartile,
   y = ~bus_rail_mean_tt,
   type = "box",
-  color = I("#456a4e"),
+  color = I("#a85217"),
   boxpoints = "all",
   jitter = 0.2,
   pointpos = 0,
-  marker = list(color = "#456a4e", opacity = 0.55, size = 5),
-  line = list(color = "#2d5d3f"),
+  marker = list(color = "#a85217", opacity = 0.55, size = 5),
+  line = list(color = "#7f2704"),
   hovertext = ~glue("Tract: {NAME}<br>Income quartile: {income_quartile}<br>Mean travel time: {round(bus_rail_mean_tt, 1)} min"),
   hoverinfo = "text",
   showlegend = FALSE
@@ -1208,12 +1162,12 @@ minority_box <- plot_ly(
   x = ~minority_quartile,
   y = ~bus_rail_mean_tt,
   type = "box",
-  color = I("#8fbf8c"),
+  color = I("#fdc38d"),
   boxpoints = "all",
   jitter = 0.2,
   pointpos = 0,
-  marker = list(color = "#8fbf8c", opacity = 0.55, size = 5),
-  line = list(color = "#5f8f74"),
+  marker = list(color = "#fdc38d", opacity = 0.55, size = 5),
+  line = list(color = "#c9701f"),
   hovertext = ~glue("Tract: {NAME}<br>Minority quartile: {minority_quartile}<br>Mean travel time: {round(bus_rail_mean_tt, 1)} min"),
   hoverinfo = "text",
   showlegend = FALSE
@@ -1235,9 +1189,9 @@ subplot(income_box, minority_box, nrows = 1, margin = 0.05, shareY = TRUE) %>%
 
 # Discussion
 
-This analysis shows that a multimodal view of transit accessibility provides a more complete picture of how MARTA connects people to key destinations across Atlanta. While it is expected that including bus service would expand the network beyond rail alone, the results show the scale of that difference: on average, the **number of destinations reachable** from each tract **increased from 1.36 to 3.30 within 20 minutes**, from **1.36 to 4.04 within 30 minutes**, and from **1.36 to 4.73 within 45 minutes** when the **full bus-and-rail network** was considered.
+This analysis shows that a multimodal view of transit accessibility provides a more complete picture of how MARTA connects people to key destinations across Atlanta. While it is expected that including bus service would expand the network beyond rail alone, the results show the scale of that difference: on average, the **number of destinations reachable** from each tract **increased from 1.36 to 3.30 within 20 minutes** when the **full bus-and-rail network** was considered.
 
-These results suggest that evaluating MARTA through a **rail-only** lens can substantially **understate accessibility**, particularly in areas outside the immediate rail corridors. A **multimodal accessibility** approach **better reflects how the system operates** in practice, where bus connections often extend the reach of the fixed-rail network and improve access to jobs, education, health care, and the airport.
+These results suggest that evaluating MARTA through a **rail-only** lens can substantially **understate accessibility**, particularly in areas outside the immediate rail corridors. A **multimodal accessibility** approach **better reflects how the system operates** in practice, where bus connections often extend the reach of the fixed-rail network and improve access to jobs, education, health care, and the airport. Part of the rail-only gap is genuine: **Emory** and **Piedmont Atlanta Hospital** are **not served by nearby MARTA rail**. The **airport** case is instead a **data artifact** — Hartsfield is served by rail, but its MARTA station is not georeferenced within the airport's census tract or boundary, so rail access there is **understated rather than absent**.
 
 The equity analysis adds an important dimension to these results. The **plotted relationships** suggest that mean travel times were not distributed evenly across Atlanta: tracts with **lower median household incomes** generally appear to have **longer travel times**, while tracts with **higher minority shares** and **higher shares of zero-vehicle households** also tend to **face longer trips**. The association is most visible for percent minority, while the pattern for percent zero-vehicle households appears weaker. 
 
